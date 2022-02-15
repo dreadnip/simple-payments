@@ -7,17 +7,24 @@ use Mollie\Api\Resources\Payment;
 
 require __DIR__ . '/vendor/autoload.php';
 
+$dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
+$dotenv->load();
+
+session_start();
+
 class Simple
 {
     private const REDIRECT_URL = "http://localhost:8080/?redirect";
-    private const PRICE = 2500;
+    private const PRICE_IN_CENTS = 2500;
 
     private MollieApiClient $mollie;
+    private PDO $db;
 
     public function __construct()
     {
         $this->mollie = new MollieApiClient();
-        $this->mollie->setApiKey($_ENV['MOLLIE_AP']);
+        $this->mollie->setApiKey($_ENV['MOLLIE_API_KEY']);
+        $this->db = new PDO("sqlite:".__DIR__."/database.sql");
     }
 
     public function createOrder(string $email)
@@ -25,13 +32,13 @@ class Simple
         $payment = $this->mollie->payments->create([
             "amount" => [
                 "currency" => "EUR",
-                "value" => number_format(self::PRICE, 2, '.', ''),
+                "value" => number_format(self::PRICE_IN_CENTS / 100, 2, '.', ''),
             ],
             "description" => sprintf("Sign-up from %s", $email),
             "redirectUrl" => self::REDIRECT_URL,
         ]);
 
-        $orderId = $this->store($payment);
+        $orderId = $this->store($payment, $email);
 
         if ($orderId !== null) {
             $_SESSION['pending'] = $orderId;
@@ -40,26 +47,39 @@ class Simple
         }
     }
 
-    private function store(Payment $payment): ?string
+    private function store(Payment $payment, string $email): ?string
     {
-        $db = new PDO("sqlite:".__DIR__."/database.sql");
-        $query = $db->prepare(
-                "INSERT INTO `order` (payment_id, status, created_on) VALUES (?, ?, datetime('now'))"
+        $query = $this->db->prepare(
+                "INSERT INTO `order` (payment_id, email, status, created_on) VALUES (?, ?, ?, datetime('now'))"
         );
-        $query->execute([$payment->id, 'open']);
+        $query->execute([$payment->id, $email, 'open']);
 
-        if (!$db->lastInsertId()) {
+        if (!$this->db->lastInsertId()) {
             return null;
         }
 
-        return $db->lastInsertId();
+        return $this->db->lastInsertId();
+    }
+
+    public function check(string $email): bool
+    {
+        $query = $this->db->prepare(
+            "SELECT id FROM `order` WHERE email = ?"
+        );
+        $query->execute([$email]);
+        $result = $query->fetchAll();
+
+        if (array_key_exists(0, $result)) {
+            return true;
+        }
+
+        return false;
     }
 
     public function update(string $orderId): void
     {
-        $db = new PDO("sqlite:".__DIR__."/database.sql");
-        $query = $db->prepare(
-            "SELECT payment_id FROM `order` WHERE id = ?"
+        $query = $this->db->prepare(
+            "SELECT payment_id, status FROM `order` WHERE id = ?"
         );
         $query->execute([$orderId]);
         $result = $query->fetchAll();
@@ -88,16 +108,14 @@ class Simple
             $status = 'open';
         }
 
-        $query = $db->prepare(
+        $query = $this->db->prepare(
             "UPDATE `order` SET status = ? WHERE id = ?"
         );
         $query->execute([$status, $orderId]);
     }
 }
 
-session_start();
 $simple = new Simple();
-
 ?>
 
 <!DOCTYPE html>
@@ -109,7 +127,6 @@ $simple = new Simple();
     <meta name="author" content="">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="data:,">
-    <style></style>
 </head>
 <body>
     <header>
@@ -120,14 +137,22 @@ $simple = new Simple();
         <small>€25.00</small>
         <p>This is the course description.</p>
         <?php
-        if (isset($_GET['redirect']) &&
-            isset($_SESSION['pending'])) {
-            $simple->update($_SESSION['pending']);
-            echo "<p>Welcome to the course</p>";
+        if (isset($_GET['redirect'])) {
+            if (isset($_SESSION['pending'])) {
+                $simple->update($_SESSION['pending']);
+                echo "<aside>Welcome to the course!</aside>";
+                unset($_SESSION['pending']);
+            } else {
+                header("Location: /", true, 303);
+            }
         }
 
         if (isset($_POST['email'])) {
-            $simple->createOrder($_POST['email']);
+            if ($simple->check($_POST['email'])) {
+                echo "<aside>Already signed up.</aside>";
+            } else {
+                $simple->createOrder($_POST['email']);
+            }
         }
         ?>
         <form method="POST">
