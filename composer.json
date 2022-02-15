@@ -1,0 +1,7 @@
+{
+    "require": {
+        "php": "^8.0",
+        "mollie/mollie-api-php": "^2.40",
+        "vlucas/phpdotenv": "^5.4"
+    }
+}
